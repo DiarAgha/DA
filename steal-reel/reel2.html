@@ -1,0 +1,351 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "Anton"; src: url("fonts/Anton.ttf"); }
+  @font-face { font-family: "Instrument Serif"; font-style: italic; src: url("fonts/InstrumentSerif-Italic.ttf"); }
+  @font-face { font-family: "Space Grotesk"; font-weight: 700; src: url("fonts/SpaceGrotesk-Bold.ttf"); }
+  html, body { margin: 0; background: #000; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+/* ============================================================
+   10 LESSONS — 15s vertical motion reel (1080x1920)
+   Scene lengths come from out/timeline.json (fitted to the voice-over).
+   Every frame is a pure function of time: renderFrame(frame).
+   ============================================================ */
+const W = 1080, H = 1920, FPS = 30, DUR = 15, BEAT = 0.5;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+window.CONFIG = window.CONFIG || { name: '', handle: '' };
+window.TIMELINE = window.TIMELINE || { scenes: [0, 1.25, 3.5, 4.75, 5.75, 7.5, 9.75, 11.5, 12.5, 13.5].map(s => ({ start: s })) };
+
+const C = { paper: '#F2ECDF', ink: '#0E0E0E', orange: '#FF4B1F', blue: '#2540FF', yellow: '#FFD23F', pink: '#FF8FB8', green: '#2BD67B', grey: '#CFCABD' };
+
+/* ---------- helpers ---------- */
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const prog = (t, s, d) => clamp((t - s) / d);
+const E = {
+  outCubic: x => 1 - Math.pow(1 - x, 3),
+  outExpo: x => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * x)),
+  inOutCubic: x => (x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2),
+  outBack: x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); },
+  inBack: x => { const c1 = 1.70158, c3 = c1 + 1; return c3 * x * x * x - c1 * x * x; },
+  outElastic: x => (x === 0 || x === 1 ? x : Math.pow(2, -10 * x) * Math.sin((x * 10 - .75) * (2 * Math.PI) / 3) + 1),
+};
+function rng(seed) { let a = seed >>> 0; return () => { a += 0x6D2B79F5; let t = a; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const ANTON = 'Anton', SERIF = 'Instrument Serif', GROT = 'Space Grotesk';
+const F = (size, fam = ANTON, style = '') => `${style} ${size}px "${fam}"`.trim();
+function capH(size, fam = ANTON) { ctx.font = F(size, fam); ctx.letterSpacing = '0px'; return ctx.measureText('H').actualBoundingBoxAscent; }
+function textW(text, size, fam = ANTON, ls = 0) { ctx.font = F(size, fam); ctx.letterSpacing = ls + 'px'; const w = ctx.measureText(text).width; ctx.letterSpacing = '0px'; return w; }
+function fitSize(text, width, fam = ANTON) { return 100 * width / textW(text, 100, fam); }
+function riseText(text, x, base, size, color, p, { fam = ANTON, align = 'left', style = '', ls = 0 } = {}) {
+  if (p <= 0) return;
+  const ch = capH(size, fam);
+  ctx.save();
+  ctx.font = F(size, fam, style); ctx.letterSpacing = ls + 'px'; ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = color;
+  ctx.beginPath(); ctx.rect(0, base - ch * 1.12, W, ch * 1.12 + size * .28); ctx.clip();
+  ctx.translate(0, (1 - E.outExpo(p)) * (ch * 1.3));
+  ctx.fillText(text, x, base);
+  ctx.restore(); ctx.letterSpacing = '0px';
+}
+function label(text, x, y, color, { size = 26, align = 'left', alpha = 1, ls = 5 } = {}) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.font = F(size, GROT, '700'); ctx.letterSpacing = ls + 'px';
+  ctx.textAlign = align; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = color; ctx.fillText(text, x, y);
+  ctx.restore(); ctx.letterSpacing = '0px';
+}
+function shakeAt(t, t0, amp, dur = .4) {
+  const p = (t - t0) / dur; if (p < 0 || p > 1) return [0, 0];
+  const d = Math.pow(1 - p, 2) * amp; return [Math.sin(t * 91) * d, Math.cos(t * 77 + 1) * d];
+}
+function poly(pts, upto) {
+  const n = pts.length - 1, f = clamp(upto) * n, i = Math.floor(f);
+  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let k = 1; k <= Math.min(i, n); k++) ctx.lineTo(pts[k][0], pts[k][1]);
+  if (i < n) { const fr = f - i; ctx.lineTo(lerp(pts[i][0], pts[i + 1][0], fr), lerp(pts[i][1], pts[i + 1][1], fr)); }
+  ctx.stroke();
+  return i < n ? [lerp(pts[i][0], pts[i + 1][0], f - i), lerp(pts[i][1], pts[i + 1][1], f - i)] : pts[n];
+}
+// circled lesson number, like the poster: ① ② ③ …
+function badge(n, col, t) {
+  const x = 150, y = 330, r = 46, p = E.outCubic(prog(t, .02, .28));
+  ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p); ctx.stroke();
+  const sz = n > 9 ? 38 : 46; ctx.globalAlpha = E.outCubic(prog(t, .1, .2)); ctx.fillStyle = col; ctx.font = F(sz); ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(String(n), x, y + capH(sz) / 2); ctx.restore();
+}
+
+/* ============================================================
+   SCENES — local time t (seconds since the cut)
+   ============================================================ */
+
+/* 1 — STEAL LIKE AN ARTIST. */
+function S1(t) {
+  ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H);
+  badge(1, C.paper, t);
+  label('10 THINGS NOBODY TOLD YOU ABOUT BEING CREATIVE', 540, 620, C.paper, { align: 'center', size: 22, ls: 3, alpha: .7 * E.outCubic(prog(t, .1, .3)) });
+  const sz = fitSize('STEAL', 940), ch = capH(sz), base = 1000 + ch / 2 - 120;
+  const sp = E.outExpo(prog(t, -.12, .42));
+  for (let k = 3; k >= 1; k--) {
+    const a = (1 - t / .8) * .4; if (a <= 0) continue;
+    ctx.save(); ctx.globalAlpha = a / k * 1.3; ctx.strokeStyle = C.orange; ctx.lineWidth = 4; ctx.font = F(sz); ctx.textAlign = 'center';
+    ctx.translate(540, base - k * 64 * (1 - E.outCubic(clamp(t / .8))) - k * 8); ctx.strokeText('STEAL', 0, 0); ctx.restore();
+  }
+  ctx.save(); ctx.translate(540, base - ch / 2); const s = lerp(1.9, 1, sp); ctx.scale(s, s);
+  ctx.font = F(sz); ctx.fillStyle = C.orange; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillText('STEAL', 0, ch / 2); ctx.restore();
+  riseText('like an artist.', 540, base + 215, 170, C.paper, prog(t, .22, .4), { fam: SERIF, align: 'center', style: 'italic' });
+}
+
+/* 2 — DON'T WAIT UNTIL YOU KNOW WHO YOU ARE TO GET STARTED. */
+function S2(t) {
+  ctx.fillStyle = C.blue; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.translate(540, 1000 + Math.sin(t * 1.5) * 10); ctx.rotate(-.06 + t * .02);
+  ctx.font = F(1500); ctx.textAlign = 'center'; ctx.strokeStyle = 'rgba(242,236,223,.2)'; ctx.lineWidth = 5; ctx.textBaseline = 'alphabetic';
+  ctx.globalAlpha = E.outCubic(prog(t, 0, .4)); ctx.strokeText('2', 0, 500); ctx.restore();
+  badge(2, C.paper, t);
+  const lines = ["DON'T WAIT", 'UNTIL YOU', 'KNOW WHO', 'YOU ARE'], at = [.05, .38, .72, .98];
+  const sizes = lines.map(l => fitSize(l, 900)), gap = 44;
+  const total = sizes.reduce((a, s) => a + capH(s), 0) + gap * 3; let y = 820 - total / 2 + 60;
+  lines.forEach((l, i) => {
+    const sz = sizes[i]; y += capH(sz); const p = E.outExpo(prog(t, at[i], .45)), dir = i % 2 ? 1 : -1;
+    ctx.save(); ctx.translate(dir * (1 - p) * 1300, 0); ctx.font = F(sz); ctx.fillStyle = i === 3 ? C.yellow : C.paper; ctx.textAlign = 'left'; ctx.fillText(l, 90, y); ctx.restore();
+    y += gap;
+  });
+  const bw = 900 * E.outCubic(prog(t, 1.2, .3)); ctx.fillStyle = C.orange; ctx.fillRect(90, y - gap + 22, bw, 14);
+  riseText('to get started.', 90, y + 125, 100, C.paper, prog(t, 1.4, .35), { fam: SERIF, style: 'italic' });
+  // play button
+  const pp = E.outBack(prog(t, 1.6, .3)); if (pp > 0) { ctx.save(); ctx.translate(930, y + 95); ctx.scale(pp, pp); ctx.fillStyle = C.yellow; ctx.beginPath(); ctx.arc(0, 0, 52, 0, 7); ctx.fill();
+    ctx.fillStyle = C.ink; ctx.beginPath(); ctx.moveTo(-14, -24); ctx.lineTo(26, 0); ctx.lineTo(-14, 24); ctx.closePath(); ctx.fill(); ctx.restore(); }
+}
+
+/* 3 — WRITE THE BOOK YOU WANT TO READ. */
+function S3(t) {
+  ctx.fillStyle = C.yellow; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(14,14,14,.13)'; ctx.lineWidth = 3;
+  for (let i = -1; i < 24; i++) { const y = ((i * 90 - t * 160) % 2160 + 2160) % 2160 - 100; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.strokeStyle = 'rgba(255,75,31,.7)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(62, 0); ctx.lineTo(62, H); ctx.stroke();
+  badge(3, C.ink, t);
+  const lines = ['WRITE THE', 'BOOK YOU', 'WANT TO', 'READ.'], sz = 232, ch = capH(sz), lh = 262, x0 = 110, y0 = 650;
+  const typed = Math.floor(Math.max(0, t - .08) * 30);
+  const hp = E.outCubic(prog(t, .95, .3));
+  if (hp > 0) { const rw = textW('READ.', sz); ctx.fillStyle = C.orange; ctx.fillRect(x0 - 16, y0 + lh * 3 - ch - 18, (rw + 32) * hp, ch + 44); }
+  let count = 0, cx = x0, cy = y0;
+  lines.forEach((l, i) => {
+    const n = clamp(typed - count, 0, l.length); count += l.length; const s = l.slice(0, n);
+    ctx.font = F(sz); ctx.fillStyle = C.ink; ctx.textAlign = 'left'; ctx.fillText(s, x0, y0 + lh * i);
+    if (n > 0 || i === 0) { cx = x0 + textW(s, sz); cy = y0 + lh * i; }
+  });
+  if (typed < 29 || Math.floor(t * 6) % 2 === 0) { ctx.fillStyle = C.ink; ctx.fillRect(cx + 10, cy - ch, 70, ch); }
+  const rnd = rng(7);
+  for (let i = 0; i < 6; i++) { const w = 420 + rnd() * 400, p = E.outCubic(prog(t, .4 + i * .09, .3)); ctx.fillStyle = C.ink; ctx.fillRect(x0, 1560 + i * 30, w * p, 10); }
+}
+
+/* 4 — USE YOUR HANDS. */
+function S4(t) {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  badge(4, C.ink, t);
+  const r = rng(21), sc = [540, 560], R = 130, order = [0, 2, 4, 1, 3, 0], star = [];
+  order.forEach(k => { const a = -Math.PI / 2 + k * 2 * Math.PI / 5; star.push([sc[0] + Math.cos(a) * R + (r() - .5) * 14, sc[1] + Math.sin(a) * R + (r() - .5) * 14]); });
+  ctx.strokeStyle = C.blue; ctx.lineWidth = 14; poly(star, E.inOutCubic(prog(t, .02, .4)));
+  const lines = ['USE YOUR', 'HANDS.'], sz = fitSize('USE YOUR', 900), ch = capH(sz), bases = [1040, 1040 + ch + 70];
+  const dp = prog(t, .05, .5), fp = E.outCubic(prog(t, .45, .3));
+  lines.forEach((l, i) => {
+    ctx.save(); ctx.font = F(sz); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.strokeStyle = C.ink; ctx.lineWidth = 7;
+    ctx.setLineDash([dp * 2200, 6000]); ctx.strokeText(l, 90, bases[i]); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.rect(0, bases[i] - ch - 10 + (1 - fp) * (ch + 30), W, ch + 40); ctx.clip(); ctx.fillStyle = C.ink; ctx.fillText(l, 90, bases[i]); ctx.restore();
+  });
+  const sq = []; for (let i = 0; i <= 70; i++) sq.push([90 + i * 10, bases[1] + 80 + Math.sin(i * .62) * 20]);
+  ctx.strokeStyle = C.orange; ctx.lineWidth = 16; const head = poly(sq, E.inOutCubic(prog(t, .55, .4)));
+  const sp = []; for (let i = 0; i <= 120; i++) { const a = i * .25, rr = 6 + i * .72; sp.push([905 + Math.cos(a) * rr, bases[1] - ch / 2 + Math.sin(a) * rr]); }
+  ctx.strokeStyle = C.pink; ctx.lineWidth = 12; poly(sp, E.inOutCubic(prog(t, .25, .5)));
+  const zz = []; for (let i = 0; i <= 14; i++) zz.push([120 + i * 26, 1560 + (i % 2 ? -40 : 40)]);
+  ctx.strokeStyle = C.yellow; ctx.lineWidth = 16; poly(zz, E.inOutCubic(prog(t, .45, .4)));
+  if (t > .55 && t < .98) { ctx.fillStyle = C.ink; ctx.beginPath(); ctx.arc(head[0], head[1], 14, 0, 7); ctx.fill(); }
+}
+
+/* 5 — SIDE PROJECTS AND HOBBIES ARE IMPORTANT. */
+function S5(t) {
+  ctx.fillStyle = C.pink; ctx.fillRect(0, 0, W, H);
+  badge(5, C.ink, t);
+  const lines = ['SIDE PROJECTS', 'AND HOBBIES', 'ARE IMPORTANT.'], at = [.05, .45, .85];
+  const sizes = lines.map(l => fitSize(l, 900)); let y = 470; const gap = 64;
+  lines.forEach((l, i) => { y += capH(sizes[i]); riseText(l, 90, y, sizes[i], i === 2 ? C.blue : C.ink, prog(t, at[i], .4), { }); ctx.font = F(sizes[i]); const ww = ctx.measureText(l).width; y += gap; });
+  // orbiting side projects
+  const cx = 540, cy = 1390, rx = 360, ry = 165;
+  ctx.strokeStyle = 'rgba(14,14,14,.3)'; ctx.lineWidth = 3; ctx.setLineDash([4, 16]); ctx.beginPath(); ctx.ellipse(cx, cy, rx * E.outCubic(prog(t, .1, .4)), ry * E.outCubic(prog(t, .1, .4)), 0, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = C.ink; ctx.beginPath(); ctx.arc(cx, cy, 64 * E.outBack(prog(t, .1, .35)), 0, 7); ctx.fill();
+  const cols = [C.yellow, C.blue, C.orange, C.paper, C.green, C.yellow];
+  for (let i = 0; i < 6; i++) {
+    const a = t * 2.6 + i * Math.PI / 3, x = cx + Math.cos(a) * rx, yy = cy + Math.sin(a) * ry, s = E.outBack(prog(t, .2 + i * .09, .3)); if (s <= 0) continue;
+    const depth = .75 + .25 * Math.sin(a); ctx.save(); ctx.translate(x, yy); ctx.scale(s * depth, s * depth); ctx.rotate(t * 3 + i); ctx.fillStyle = cols[i];
+    ctx.strokeStyle = C.ink; ctx.lineWidth = 6; ctx.beginPath();
+    if (i % 3 === 0) ctx.arc(0, 0, 46, 0, 7); else if (i % 3 === 1) ctx.rect(-42, -42, 84, 84); else { ctx.moveTo(0, -52); ctx.lineTo(48, 36); ctx.lineTo(-48, 36); ctx.closePath(); }
+    ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+}
+
+/* 6 — THE SECRET: DO GOOD WORK AND SHARE IT WITH PEOPLE. */
+function S6(t) {
+  ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H);
+  badge(6, C.paper, t);
+  // "THE SECRET:" with hand-drawn underline
+  label('THE SECRET:', 90, 520, C.paper, { size: 40, ls: 8, alpha: E.outCubic(prog(t, .05, .25)) });
+  const ul = [[90, 545], [180, 549], [270, 543], [370, 548]]; ctx.strokeStyle = C.yellow; ctx.lineWidth = 6; ctx.lineCap = 'round'; poly(ul, E.outCubic(prog(t, .25, .3)));
+  const L = ['DO GOOD WORK', 'AND SHARE IT', 'WITH PEOPLE.'], at = [.3, .85, 1.3], cols = [C.paper, C.orange, C.paper];
+  const sizes = L.map(l => fitSize(l, 900)); let y = 590; const gap = 54;
+  L.forEach((l, i) => { y += capH(sizes[i]); riseText(l, 90, y, sizes[i], cols[i], prog(t, at[i], .4)); y += gap; });
+  // network
+  const hub = [540, 1440], shareT = .85, speed = 1000, r = rng(5), nodes = [], pc = [C.yellow, C.pink, C.blue, C.paper, C.green, C.orange];
+  for (let i = 0; i < 14; i++) { const a = r() * Math.PI * 2, d = 150 + r() * 270; nodes.push([clamp(hub[0] + Math.cos(a) * d * 1.45, 110, 970), hub[1] + Math.sin(a) * d * .55, d, pc[i % 6]]); }
+  const st = t - shareT;
+  if (st > 0) for (let k = 0; k < 3; k++) { const rt = st - k * .25; if (rt < 0) continue; const rr = rt * speed, a = clamp(1 - rr / 800); ctx.strokeStyle = `rgba(242,236,223,${a * .7})`; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(hub[0], hub[1], rr, 0, 7); ctx.stroke(); }
+  nodes.forEach(n => { const p = prog(t, shareT + n[2] / speed, .22); if (p <= 0) return; ctx.strokeStyle = 'rgba(242,236,223,.35)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(hub[0], hub[1]); ctx.lineTo(lerp(hub[0], n[0], E.outCubic(p)), lerp(hub[1], n[1], E.outCubic(p))); ctx.stroke(); ctx.fillStyle = n[3]; ctx.beginPath(); ctx.arc(n[0], n[1], 16 * E.outBack(p), 0, 7); ctx.fill(); });
+  ctx.fillStyle = C.orange; ctx.beginPath(); ctx.arc(hub[0], hub[1], 42 * (1 + .12 * Math.sin(t * Math.PI * 4)) * E.outBack(prog(t, .1, .35)), 0, 7); ctx.fill();
+}
+
+/* 7 — GEOGRAPHY IS NO LONGER OUR MASTER. */
+function S7(t) {
+  ctx.fillStyle = C.orange; ctx.fillRect(0, 0, W, H);
+  badge(7, C.ink, t);
+  const cx = 540, cy = 640, R = 210, rot = t * 1.1 + .6, gs = E.outBack(prog(t, .0, .45));
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(gs, gs); ctx.translate(-cx, -cy);
+  ctx.strokeStyle = C.ink; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke();
+  ctx.lineWidth = 2.5; ctx.globalAlpha = .75;
+  for (let k = 0; k < 6; k++) { const a = rot + k * Math.PI / 6, rx = Math.max(.5, Math.abs(Math.cos(a)) * R); ctx.beginPath(); ctx.ellipse(cx, cy, rx, R, 0, 0, 7); ctx.stroke(); }
+  for (const lat of [-60, -30, 0, 30, 60]) { const f = lat * Math.PI / 180, rr = Math.cos(f) * R, yy = cy + Math.sin(f) * R; ctx.beginPath(); ctx.moveTo(cx - rr, yy); ctx.lineTo(cx + rr, yy); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+  const pts = [[40, 10], [-74, 40], [139, -35], [2, 48], [-46, -23], [100, 22], [-120, -33], [18, -30]];
+  const proj = ([lon, lat]) => { const l = lon * Math.PI / 180 + rot, f = lat * Math.PI / 180; return [cx + R * Math.cos(f) * Math.sin(l), cy - R * Math.sin(f), Math.cos(f) * Math.cos(l)]; };
+  const pr = pts.map(proj);
+  [[0, 1], [1, 2], [3, 5], [4, 6], [2, 7], [0, 3]].forEach(([a, b], k) => {
+    const A = pr[a], B = pr[b]; if (A[2] < 0 || B[2] < 0) return; const p = E.outCubic(prog(t, .45 + k * .1, .35));
+    const mx = (A[0] + B[0]) / 2, my = (A[1] + B[1]) / 2 - 70, seg = []; for (let i = 0; i <= 24; i++) { const u = i / 24; seg.push([(1 - u) * (1 - u) * A[0] + 2 * u * (1 - u) * mx + u * u * B[0], (1 - u) * (1 - u) * A[1] + 2 * u * (1 - u) * my + u * u * B[1]]); }
+    ctx.strokeStyle = C.paper; ctx.lineWidth = 5; poly(seg, p);
+  });
+  pr.forEach(p => { if (p[2] > 0) { ctx.fillStyle = C.paper; ctx.beginPath(); ctx.arc(p[0], p[1], 9 + 3 * p[2], 0, 7); ctx.fill(); } });
+  ctx.restore();
+  const L = ['GEOGRAPHY', 'IS NO LONGER', 'OUR MASTER.'], at = [.2, .6, 1.0], cols = [C.ink, C.paper, C.ink];
+  const sizes = L.map(l => fitSize(l, 860)); let y = 960; const gap = 50;
+  L.forEach((l, i) => { y += capH(sizes[i]); riseText(l, 90, y, sizes[i], cols[i], prog(t, at[i], .4)); y += gap; });
+}
+
+/* 8 — BE NICE. (THE WORLD IS A SMALL TOWN.) */
+function S8(t) {
+  ctx.fillStyle = C.green; ctx.fillRect(0, 0, W, H);
+  badge(8, C.ink, t);
+  const sz = fitSize('BE NICE.', 900), ch = capH(sz); riseText('BE NICE.', 90, 520 + ch, sz, C.ink, prog(t, 0, .3));
+  riseText('(the world is a small town.)', 90, 520 + ch + 120, 78, C.ink, prog(t, .25, .3), { fam: SERIF, style: 'italic' });
+  const fx = 540, fy = 1290, s = .0 + E.outElastic(prog(t, .05, .6));
+  ctx.save(); ctx.translate(fx, fy); ctx.scale(s, s);
+  ctx.fillStyle = C.yellow; ctx.strokeStyle = C.ink; ctx.lineWidth = 9; ctx.beginPath(); ctx.arc(0, 0, 210, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = C.ink; const bl = 1 - .9 * Math.pow(Math.max(0, 1 - Math.abs(((t * 1.6) % 1) - .5) * 14), 2) * 0; ctx.beginPath(); ctx.ellipse(-72, -50, 20, 30 * bl, 0, 0, 7); ctx.ellipse(72, -50, 20, 30 * bl, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,75,31,.55)'; ctx.beginPath(); ctx.arc(-120, 30, 28, 0, 7); ctx.arc(120, 30, 28, 0, 7); ctx.fill();
+  ctx.strokeStyle = C.ink; ctx.lineWidth = 13; ctx.lineCap = 'round'; const sm = E.outCubic(prog(t, .3, .35)); ctx.beginPath(); ctx.arc(0, 20, 110, Math.PI * (.5 - .36 * sm), Math.PI * (.5 + .36 * sm)); ctx.stroke();
+  ctx.restore();
+}
+
+/* 9 — BE BORING. (IT'S THE ONLY WAY TO GET WORK DONE.) */
+function S9(t) {
+  ctx.fillStyle = C.grey; ctx.fillRect(0, 0, W, H);
+  badge(9, C.ink, t);
+  const sz = fitSize('BE BORING.', 900), ch = capH(sz);
+  if (t > .06) { ctx.font = F(sz); ctx.fillStyle = C.ink; ctx.textAlign = 'left'; ctx.fillText('BE BORING.', 90, 520 + ch); }
+  if (t > .22) label('(IT’S THE ONLY WAY TO GET WORK DONE.)', 90, 520 + ch + 90, C.ink, { size: 30, ls: 2, alpha: .85 });
+  // flat-line then progress bar
+  ctx.strokeStyle = C.ink; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(90, 1020); ctx.lineTo(90 + 900 * E.inOutCubic(prog(t, .1, .35)), 1020); ctx.stroke();
+  const bp = prog(t, .2, .55); ctx.lineWidth = 6; ctx.strokeRect(90, 1120, 900, 84); ctx.fillStyle = C.ink; ctx.fillRect(90, 1120, 900 * bp, 84);
+  label(Math.round(bp * 100) + '%', 990, 1260, C.ink, { size: 34, align: 'right', ls: 3 }); label('WORK DONE', 90, 1260, C.ink, { size: 34, ls: 5 });
+  const cp = E.outBack(prog(t, .75, .25)); if (cp > 0) { ctx.save(); ctx.translate(540, 1440); ctx.scale(cp, cp); ctx.fillStyle = C.green; ctx.beginPath(); ctx.arc(0, 0, 90, 0, 7); ctx.fill(); ctx.strokeStyle = C.ink; ctx.lineWidth = 16; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath(); ctx.moveTo(-40, 4); ctx.lineTo(-10, 36); ctx.lineTo(44, -30); ctx.stroke(); ctx.restore(); }
+}
+
+/* 10 — CREATIVITY IS SUBTRACTION. */
+const HUB10 = [540, 1230];
+function S10(t) {
+  ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H);
+  badge(10, C.paper, t);
+  const a = fitSize('CREATIVITY IS', 900), b = fitSize('SUBTRACTION.', 900);
+  riseText('CREATIVITY IS', 90, 530, a, C.paper, prog(t, .02, .3));
+  riseText('SUBTRACTION.', 90, 530 + capH(b) + 56, b, C.orange, prog(t, .14, .3));
+  const cols = [C.paper, C.orange, C.blue, C.yellow, C.pink], N = 7, sp = 112, r0 = 44, r = rng(11), delay = [];
+  for (let i = 0; i < N * N; i++) delay.push(r());
+  for (let row = 0; row < N; row++) for (let c = 0; c < N; c++) {
+    const i = row * N + c, x = HUB10[0] + (c - 3) * sp, y = HUB10[1] + (row - 3) * sp, isHub = c === 3 && row === 3;
+    let s = E.outBack(prog(t, .05 + (c + row) * .02, .25));
+    if (!isHub) { const out = prog(t, .35 + delay[i] * .55, .2); s *= 1 - E.inBack(out); if (out >= 1) s = 0; }
+    if (s <= .001) continue;
+    let col = cols[(c + row) % cols.length]; if (isHub) { col = C.orange; s *= 1 + .35 * E.outElastic(prog(t, 1.0, .5)); }
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r0 * Math.max(0, s), 0, 7); ctx.fill();
+  }
+  riseText('Steal Like an Artist', 540, 1560, 96, C.paper, prog(t, 1.0, .4), { fam: SERIF, align: 'center', style: 'italic' });
+  const who = ['BY AUSTIN KLEON', CONFIG.name, CONFIG.handle].filter(Boolean).join('  ·  ');
+  label(who, 540, 1630, C.paper, { align: 'center', size: 24, ls: 5, alpha: .8 * E.outCubic(prog(t, 1.15, .3)) });
+}
+
+/* ============================================================
+   TIMELINE + TRANSITIONS
+   ============================================================ */
+const TR = .2;
+const FNS = [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10];
+const HUD = [() => C.paper, () => C.paper, () => C.ink, () => C.ink, () => C.ink, () => C.paper, () => C.ink, () => C.ink, () => C.ink, () => C.paper];
+const SCENES = FNS.map((fn, i) => ({ start: TIMELINE.scenes[i].start, fn, hud: HUD[i] }));
+const WIPES = ['bars', 'diag', 'blinds', 'circleL', 'up', 'bars', 'diag', 'circleC', 'blinds'];
+
+function wipePath(type, p) {
+  p = E.inOutCubic(p); ctx.beginPath();
+  if (type === 'bars') { const n = 6, bw = W / n; for (let i = 0; i < n; i++) { const q = E.inOutCubic(clamp(p * 1.7 - i * .12)); ctx.rect(i * bw - 1, 0, bw + 2, H * q); } }
+  else if (type === 'diag') { const s = p * (W + H) * 1.02; ctx.moveTo(-5, -5); ctx.lineTo(s + 5, -5); ctx.lineTo(-5, s + 5); ctx.closePath(); }
+  else if (type === 'blinds') { const n = 8, bh = H / n; for (let i = 0; i < n; i++) { const q = clamp(p * 1.6 - i * .08); ctx.rect(0, i * bh - 1, W * q + 1, bh + 2); } }
+  else if (type === 'circleL') ctx.arc(130, 1700, p * 2300, 0, 7);
+  else if (type === 'circleC') ctx.arc(540, 960, p * 1300, 0, 7);
+  else if (type === 'up') ctx.rect(0, H * (1 - p), W, H * p + 1);
+}
+
+function drawHUD(time, col) {
+  ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.globalAlpha = .8;
+  const m = 56, L = 34;
+  [[m, m, 1, 1], [W - m, m, -1, 1], [m, H - m, 1, -1], [W - m, H - m, -1, -1]].forEach(([x, y, sx, sy]) => { ctx.beginPath(); ctx.moveTo(x, y + sy * L); ctx.lineTo(x, y); ctx.lineTo(x + sx * L, y); ctx.stroke(); });
+  ctx.restore();
+  ctx.fillStyle = col; ctx.globalAlpha = .25; ctx.fillRect(90, 118, W - 180, 4); ctx.globalAlpha = 1; ctx.fillRect(90, 117, (W - 180) * (time / DUR), 6);
+  const f = Math.floor(time * FPS), ss = String(Math.floor(f / FPS)).padStart(2, '0'), ff = String(f % FPS).padStart(2, '0');
+  label('MOTION REEL ’26', 90, 175, col, { size: 24, ls: 5, alpha: .9 }); label(`00:${ss}:${ff}`, W - 90, 175, col, { size: 24, ls: 4, align: 'right', alpha: .9 });
+  label('STEAL LIKE AN ARTIST  ·  AUSTIN KLEON', 90, H - 150, col, { size: 18, ls: 4, alpha: .6 });
+}
+
+function drawGrain(frame) {
+  if (!drawGrain.pat) {
+    const g = document.createElement('canvas'); g.width = g.height = 256; const gc = g.getContext('2d'), id = gc.createImageData(256, 256), r = rng(99);
+    for (let i = 0; i < id.data.length; i += 4) { const v = 90 + r() * 120; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255; }
+    gc.putImageData(id, 0, 0); drawGrain.pat = ctx.createPattern(g, 'repeat');
+  }
+  const r = rng(frame * 13 + 1);
+  ctx.save(); ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = .2; ctx.translate(Math.floor(r() * 256), Math.floor(r() * 256)); ctx.fillStyle = drawGrain.pat; ctx.fillRect(-256, -256, W + 512, H + 512); ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * .75); v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.22)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+window.renderFrame = function (frame) {
+  const time = frame / FPS;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+  const bp = (time / BEAT) % 1, punch = Math.exp(-bp * 7) * .008;
+  let sx = 0, sy = 0; SCENES.forEach((s, i) => { const a = i === 0 ? 26 : 14, k = shakeAt(time, s.start, a); sx += k[0]; sy += k[1]; });
+  ctx.save(); ctx.translate(W / 2 + sx, H / 2 + sy); ctx.scale(1.03 + punch, 1.03 + punch); ctx.translate(-W / 2, -H / 2);
+  let idx = 0; for (let i = 0; i < SCENES.length; i++) if (time >= SCENES[i].start - 1e-6) idx = i;
+  const cur = SCENES[idx], lt = time - cur.start; let hudCol = cur.hud();
+  if (idx > 0 && lt < TR) {
+    const prev = SCENES[idx - 1]; prev.fn(time - prev.start);
+    ctx.save(); wipePath(WIPES[idx - 1], lt / TR); ctx.clip(); cur.fn(lt); ctx.restore();
+    if (lt / TR < .5) hudCol = prev.hud();
+  } else cur.fn(lt);
+  drawHUD(time, hudCol);
+  ctx.restore();
+  drawGrain(frame);
+};
+document.fonts.load('100px "Anton"'); document.fonts.load('italic 100px "Instrument Serif"'); document.fonts.load('700 100px "Space Grotesk"');
+window.fontsReady = document.fonts.ready.then(() => true);
+</script>
+</body>
+</html>

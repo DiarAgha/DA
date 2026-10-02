@@ -1,0 +1,97 @@
+{
+ "scenes": [
+  {
+   "start": 0.0,
+   "len": 1.25
+  },
+  {
+   "start": 1.25,
+   "len": 2.25
+  },
+  {
+   "start": 3.5,
+   "len": 1.25
+  },
+  {
+   "start": 4.75,
+   "len": 1.0
+  },
+  {
+   "start": 5.75,
+   "len": 1.75
+  },
+  {
+   "start": 7.5,
+   "len": 2.25
+  },
+  {
+   "start": 9.75,
+   "len": 1.75
+  },
+  {
+   "start": 11.5,
+   "len": 1.0
+  },
+  {
+   "start": 12.5,
+   "len": 1.0
+  },
+  {
+   "start": 13.5,
+   "len": 1.5
+  }
+ ],
+ "voice": [
+  {
+   "start": 0.02,
+   "dur": 0.917,
+   "text": "Steal like an artist."
+  },
+  {
+   "start": 1.32,
+   "dur": 1.978,
+   "text": "Don't wait until you know who you are, to get started."
+  },
+  {
+   "start": 3.57,
+   "dur": 0.967,
+   "text": "Write the book you want to read."
+  },
+  {
+   "start": 4.82,
+   "dur": 0.66,
+   "text": "Use your hands."
+  },
+  {
+   "start": 5.82,
+   "dur": 1.359,
+   "text": "Side projects and hobbies are important."
+  },
+  {
+   "start": 7.57,
+   "dur": 1.817,
+   "text": "The secret: do good work, and share it with people."
+  },
+  {
+   "start": 9.82,
+   "dur": 1.494,
+   "text": "Geography is no longer our master."
+  },
+  {
+   "start": 11.57,
+   "dur": 0.432,
+   "text": "Be nice."
+  },
+  {
+   "start": 12.57,
+   "dur": 0.434,
+   "text": "Be boring."
+  },
+  {
+   "start": 13.57,
+   "dur": 1.037,
+   "text": "Creativity is subtraction."
+  }
+ ],
+ "speed": 1.44
+}
