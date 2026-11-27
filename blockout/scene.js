@@ -4,7 +4,7 @@ import * as THREE from 'three';
 
 const W = 1920, H = 1080, FPS = 25, FRAMES = 101;
 const params = new URLSearchParams(location.search);
-const WIND = parseFloat(params.get('wind') ?? '0.8');
+const WIND = parseFloat(params.get('wind') ?? '1');
 
 // ---------- renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -99,7 +99,7 @@ const skyEnv = (() => {
   sc.add(scene.children.find(o => o.material && o.material.type === 'ShaderMaterial').clone());
   return pm.fromScene(sc, 0.02).texture;
 })();
-function poolWater(x, y, z, ry, w, d) {
+function poolWater(quad, y) {   // outline [FL, BL, BR, FR, ...front points back to FL] as [x, z]
   const m = new THREE.MeshStandardMaterial({ color: 0x2a7399, roughness: 0.06, metalness: 0.1, envMap: skyEnv, envMapIntensity: 0.9 });
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uT = uWaterTime;
@@ -110,19 +110,30 @@ function poolWater(x, y, z, ry, w, d) {
       vec2 q = vWPos.xz;
       // slow, small overlapping wave trains (gentle)
       vec2 g = vec2(0.0);
-      g += 0.050 * vec2(0.8, 0.6)  * cos(dot(q, vec2(0.8, 0.6))  * 4.2 - uT * 1.1);
-      g += 0.040 * vec2(-0.5, 0.9) * cos(dot(q, vec2(-0.5, 0.9)) * 5.7 - uT * 1.4 + 1.3);
-      g += 0.030 * vec2(0.95,-0.3) * cos(dot(q, vec2(0.95,-0.3)) * 8.3 - uT * 1.9 + 2.1);
-      g += 0.018 * vec2(-0.9,-0.4) * cos(dot(q, vec2(-0.9,-0.4)) * 13.0 - uT * 2.6 + 0.7);
+      g += 0.090 * vec2(0.8, 0.6)  * cos(dot(q, vec2(0.8, 0.6))  * 4.2 - uT * 1.1);
+      g += 0.075 * vec2(-0.5, 0.9) * cos(dot(q, vec2(-0.5, 0.9)) * 5.7 - uT * 1.4 + 1.3);
+      g += 0.055 * vec2(0.95,-0.3) * cos(dot(q, vec2(0.95,-0.3)) * 8.3 - uT * 1.9 + 2.1);
+      g += 0.032 * vec2(-0.9,-0.4) * cos(dot(q, vec2(-0.9,-0.4)) * 13.0 - uT * 2.6 + 0.7);
       vec3 nW = normalize(vec3(-g.x, 1.0, -g.y));
       normal = normalize((viewMatrix * vec4(nW, 0.0)).xyz);
     `).replace('#include <color_fragment>', `#include <color_fragment>
       float caus = sin(vWPos.x * 6.0 + uT * 0.9) * sin(vWPos.z * 7.0 - uT * 1.1);
-      diffuseColor.rgb *= 0.92 + 0.12 * caus;`);
+      diffuseColor.rgb *= 0.88 + 0.22 * caus;`);
   };
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(w, d, 1, 1), m);
-  water.rotation.set(-Math.PI / 2, 0, ry, 'YXZ'); water.rotation.order = 'YXZ'; water.rotation.y = ry;
-  water.position.set(x, y, z); water.receiveShadow = true; scene.add(water);
+  const shapeOf = (pts) => { const sh = new THREE.Shape(); pts.forEach(([x, z], i) => i ? sh.lineTo(x, -z) : sh.moveTo(x, -z)); return sh; };
+  // water surface
+  const water = new THREE.Mesh(new THREE.ShapeGeometry(shapeOf(quad)), m);
+  water.rotation.x = -Math.PI / 2; water.position.y = y; water.receiveShadow = true; scene.add(water);
+  // stone basin under the water, outer coping slightly larger
+  const basin = new THREE.Mesh(new THREE.ExtrudeGeometry(shapeOf(quad), { depth: 0.45, bevelEnabled: false }), M.stone);
+  basin.rotation.x = -Math.PI / 2; basin.position.y = y - 0.47; basin.castShadow = basin.receiveShadow = true; scene.add(basin);
+  // blue mosaic infinity-edge face along the front edge (FL -> FR), hanging over the wall
+  const front = [...quad.slice(3), quad[0]], top = y, bot = y - 0.45, pos = [], idx = [];
+  front.forEach(([x, z], i) => { pos.push(x, top, z + 0.01, x, bot, z + 0.01); if (i) { const k = 2 * i; idx.push(k - 2, k - 1, k, k, k - 1, k + 1); } });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const mosaic = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x2b5f80, roughness: 0.35, side: THREE.DoubleSide }));
+  mosaic.receiveShadow = true; scene.add(mosaic);
 }
 
 // ---------- terrace / retaining walls / pool ----------
@@ -144,8 +155,8 @@ const wallLine = [[-12.5, -38], [-10.7, -28], [3.6, -16.6], [9, -14.5]];   // to
   // timber deck strip in front of the houses
   box(9, 0.08, 4.0, M.deck, 1.5, 0.04, -23.2, 0.12);
   // pool (infinity edge toward the wall)
-  box(7.0, 0.5, 2.6, M.stone, -3.2, 0.1, -21.2, -0.62);
-  poolWater(-3.2, 0.37, -21.2, -0.62, 6.6, 2.2);
+  // pool outline measured from the render (image corners back-projected onto the deck through the frame-0 camera)
+  poolWater([[-5.48, -22.84], [-4.5, -23.21], [-0.52, -21.3], [-0.6, -20.18], [-2.61, -20.1]], 0.1);
   // lower planter step + parapet bottom right
   box(4.2, 1.2, 0.4, M.stone, 6.1, -0.3, -19.2, -0.1);
 }
@@ -404,7 +415,7 @@ broadleaf({ x: -25, y: -12, z: -36, trunkH: 3, crownR: 3, crownH: 3, n: 1800, le
 broadleaf({ x: -10.5, y: 0, z: -31, trunkH: 0.2, crownR: 2.2, crownH: 1.6, n: 1400, color: 0x4e6c34, flex: 0.6 }); // hedge mass behind pool (left)
 broadleaf({ x: -7.0, y: 0, z: -30.5, trunkH: 0.2, crownR: 2.0, crownH: 1.5, n: 1200, color: 0x56743a, flex: 0.6 });
 broadleaf({ x: -5.6, y: 0, z: -28.6, trunkH: 0.8, crownR: 1.3, crownH: 1.6, n: 1100, color: 0x6c7f4a, leaf: 0.22 }); // olive near A
-broadleaf({ x: -0.3, y: -0.6, z: -19.6, trunkH: 0.4, crownR: 1.1, crownH: 1.3, n: 1200, color: 0x5f7b45, leaf: 0.22 }); // olive in planter
+broadleaf({ x: 0.3, y: -0.6, z: -19.6, trunkH: 0.4, crownR: 1.1, crownH: 1.3, n: 1200, color: 0x5f7b45, leaf: 0.22 }); // olive in planter
 broadleaf({ x: 5.6, y: 0, z: -20.8, trunkH: 0.8, crownR: 2.0, crownH: 2.6, n: 6500, color: 0x3f5a2c, leaf: 0.34 }); // big bush right of B
 broadleaf({ x: 7.6, y: 0, z: -20.2, trunkH: 0.1, crownR: 2.2, crownH: 0.9, n: 900, color: 0x48652f, flex: 0.5 });  // low hedge right
 broadleaf({ x: -6.0, y: 3.8, z: -24.9, trunkH: 0.5, crownR: 0.5, crownH: 1.0, n: 350, color: 0x4d6a33, leaf: 0.16 }); // potted tree on A balcony
@@ -413,7 +424,7 @@ hedge({ x0: 3.2, x1: 9.5, z0: -19.9, z1: -19.6, y: 0.2, h: 0.9, n: 1600, color: 
 hedge({ x0: 2.5, x1: 9.5, z0: -13.2, z1: -12.4, y: -2.2, h: 1.6, n: 1800, color: 0x3e5a2a });   // low hedge, bottom right
 cypress({ x: 6.6, y: -6, z: -13.5, h: 9.2, r: 0.9, n: 1600, color: 0x4c6a34 });               // narrow shrub behind the palm trunk
 grassPatch({ x0: -26, x1: -8, z0: -34, z1: -14, n: 9000, heightFn: slopeY, len: 0.7 });      // pampas & grasses on the slope
-grassPatch({ x0: -3, x1: 3.5, z0: -20.5, z1: -17, n: 700, heightFn: () => 0, color: 0x7d8a4a, plumeRate: 0.1, len: 0.28 });
+grassPatch({ x0: 0.2, x1: 3.5, z0: -20.5, z1: -17, n: 450, heightFn: () => 0, color: 0x7d8a4a, plumeRate: 0.1, len: 0.28 });
 leaves.build(); blades.build(); trunks.build();
 
 // ---------- camera: frame 0 matched to the render; motion = solved Cam_07 camera (tools/solve_camera.py) ----------
